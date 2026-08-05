@@ -1,0 +1,37 @@
+name: hosted-health
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check public health contract when configured
+        env:
+          BASE_URL: ${{ vars.TIDE_PUBLIC_BASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BASE_URL" ]; then
+            echo "::notice::Repository variable TIDE_PUBLIC_BASE_URL is not configured yet; skipping."
+            exit 0
+          fi
+          BASE_URL="${BASE_URL%/}"
+          response="$(curl --fail --silent --show-error --location \
+            --retry 3 --retry-all-errors --connect-timeout 20 --max-time 90 \
+            "$BASE_URL/health")"
+          python - "$response" <<'PY'
+          import json
+          import sys
+
+          body = json.loads(sys.argv[1])
+          if body.get("status") != "ok":
+              raise SystemExit(f"unexpected health response: {body!r}")
+          print(json.dumps({"status": "PASS", "health": body}, indent=2))
+          PY

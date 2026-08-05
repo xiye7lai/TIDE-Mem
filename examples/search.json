@@ -1,0 +1,5 @@
+{
+  "query": "Where does the user currently live?",
+  "user_id": "example:user:1",
+  "top_k": 100
+}

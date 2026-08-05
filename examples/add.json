@@ -1,0 +1,17 @@
+{
+  "request_id": "example:add:1",
+  "messages": [
+    {
+      "role": "user",
+      "timestamp": 1767225600000,
+      "content": "I moved from Paris to Berlin in February 2026."
+    },
+    {
+      "role": "assistant",
+      "timestamp": 1767225660000,
+      "content": "Understood."
+    }
+  ],
+  "user_id": "example:user:1",
+  "session_id": "example:session:1"
+}

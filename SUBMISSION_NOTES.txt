@@ -1,0 +1,30 @@
+TIDE-Mem v0.1.0-amc2026
+
+Track: Textual Memory
+Division: Academic Methods
+Route: Self-hosted Add/Search API
+Repository: [PUBLIC GITHUB REPOSITORY URL]
+Commit: [FULL 40-CHAR COMMIT SHA]
+Contact: [YOUR NAME] <[YOUR EMAIL]>
+Affiliation/team: [YOUR AFFILIATION OR TEAM]
+
+Endpoints:
+  Health: [HTTPS PUBLIC BASE URL]/health
+  Add:    [HTTPS PUBLIC BASE URL]/v1/memory/add
+  Search: [HTTPS PUBLIC BASE URL]/v1/memory/search
+Authentication: X-Api-Key (Memory System Key supplied only through the controlled secret field)
+Declared initial concurrency: Add 16, Search 16
+Formal Top K: 100
+
+Method summary:
+TIDE-Mem stores immutable raw conversational evidence together with gpt-4o-mini structured memory cards. It maintains event-time-aware mutable state, applies exact user_id isolation, and combines FTS5/exact/temporal retrieval, reciprocal-rank fusion, evidence-ID-only gpt-4o-mini reranking, and coverage-aware selection. Search returns only stored evidence and never generates the final answer.
+
+Reproducibility:
+  docker compose up --build -d
+  python scripts/smoke_test.py --base-url [HTTPS PUBLIC BASE URL] --memory-key '<private key>'
+
+Originality disclosure:
+This is a new open-source implementation. No benchmark labels, private data, hard-coded answers, cross-user state, prompt injection, or human real-time answering are included. General dependencies are disclosed in requirements.txt; the full method and all changes are documented in docs/METHOD.md.
+
+Data policy:
+Evaluation data is used only for the evaluation, request/evidence bodies are not logged, and stored data is automatically deleted after 30 days by default.
