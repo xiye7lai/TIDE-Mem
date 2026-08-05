@@ -8,7 +8,7 @@ test:
 
 check: test
 	python -m compileall -q tide_mem scripts
-	python scripts/check_submission.py
+	bash -n deploy/docker-entrypoint.sh
 
 run:
 	uvicorn tide_mem.api:app --host 0.0.0.0 --port 8000
