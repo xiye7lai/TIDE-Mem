@@ -18,6 +18,15 @@ class RetrievalService:
         self.db = db
         self.llm = llm
 
+    def _view_allows(self, row: dict[str, Any]) -> bool:
+        view = self.settings.memory_view
+        kind = str(row.get("kind", ""))
+        if view == "full":
+            return True
+        if view == "raw":
+            return kind in {"raw_episode", "raw_window"}
+        return kind.startswith("card_") or kind == "session_summary"
+
     async def search(self, request: SearchRequest) -> SearchResponse:
         plan = await self.llm.plan_query(request.query, request.options)
         candidates = await self._gather_candidates(request.user_id, request.query, plan)
@@ -84,6 +93,9 @@ class RetrievalService:
                 rrf[ident] += 0.45 / (60.0 + rank)
                 channels[ident].add("recent")
 
+        candidates = {
+            ident: row for ident, row in candidates.items() if self._view_allows(row)
+        }
         for ident, row in candidates.items():
             row["rrf_score"] = rrf[ident]
             row["channels"] = sorted(channels[ident])
@@ -115,11 +127,11 @@ class RetrievalService:
             entity_hits = sum(1 for term in entity_terms if term and term in searchable)
             time_hits = sum(1 for term in time_terms if term and term in searchable)
             state_bonus = 0.0
-            if row.get("state_key"):
+            if self.settings.temporal_boost and row.get("state_key"):
                 state_bonus += 0.025
-            if plan.prefer_latest and row.get("is_current"):
+            if self.settings.temporal_boost and plan.prefer_latest and row.get("is_current"):
                 state_bonus += 0.12
-            if plan.question_type == "update" and row.get("is_current"):
+            if self.settings.temporal_boost and plan.question_type == "update" and row.get("is_current"):
                 state_bonus += 0.10
             provenance_bonus = 0.025 if row.get("kind") == "raw_episode" else 0.04
             heuristic = (
@@ -154,7 +166,7 @@ class RetrievalService:
                 row["final_score"] = 0.58 * row["heuristic_score"] + 0.42 * llm_score
             else:
                 row["final_score"] = row["heuristic_score"]
-            if plan.prefer_latest and row.get("is_current"):
+            if self.settings.temporal_boost and plan.prefer_latest and row.get("is_current"):
                 row["final_score"] = min(1.0, row["final_score"] + 0.04)
 
         return sorted(

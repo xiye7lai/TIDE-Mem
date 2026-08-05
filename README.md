@@ -2,15 +2,12 @@
 
 TIDE-Mem is an initial research prototype for the
 [Agent Memory Challenge](https://agentmemories.ai/home), targeting the
-**Academic / Textual Memory / self-hosted Add/Search API** route.
+**Academic / Textual Memory / GitHub code submission** route.
 
-It implements only the memory service required by the competition:
-
-- `GET /health`
-- `POST /v1/memory/add`
-- `POST /v1/memory/search`
-
-Search returns ranked memory evidence, not a final answer.
+This repository contains only the reproducible memory service and a local
+public-data retrieval proxy. It does not require a challenge Leaderboard Key,
+a public deployment, or Render. The challenge platform can build the
+Dockerfile and run the Add/Search service inside its evaluator environment.
 
 ## Initial method
 
@@ -28,15 +25,20 @@ TIDE-Mem combines four ideas:
    candidate IDs; a coverage-aware selector reduces duplicate results for
    multi-hop, list, and count questions.
 
-The complete method description is in [docs/METHOD.md](docs/METHOD.md).
+Search returns ranked memory evidence, never a final answer. The complete
+method is in [docs/METHOD.md](docs/METHOD.md).
 
 ## API contract
 
-| Purpose | Endpoint | Authentication |
+| Purpose | Endpoint | Default code-submission auth |
 |---|---|---|
 | Health | `GET /health` | None |
-| Add | `POST /v1/memory/add` | `X-Api-Key` |
-| Search | `POST /v1/memory/search` | `X-Api-Key` |
+| Add | `POST /v1/memory/add` | None |
+| Search | `POST /v1/memory/search` | None |
+
+The optional standalone setting `TIDE_REQUIRE_AUTH=true` enables `X-Api-Key`
+authentication using `TIDE_MEMORY_API_KEY`. The Academic code-submission route
+does not issue or need that key.
 
 Add is synchronous: all submitted messages are stored and searchable before
 HTTP 200 is returned. Repeated `request_id` values are idempotent.
@@ -68,88 +70,139 @@ Example Search request:
 }
 ```
 
-The Search response is an ordered `data` array whose items contain stable
-`id`, evidence `content`, and optional `score` and `created_at`.
+The Search response is an ordered `data` array containing stable `id`, evidence
+`content`, and optional `score` and `created_at`.
 
-## Local Docker run
+## Build and run
 
-Requirements: Docker and access to the exact model `gpt-4o-mini`.
+Requirements: Docker and, for the full method, secure platform access to the
+exact model `gpt-4o-mini`.
 
 ```bash
-cp .env.example .env
-# Set TIDE_MEMORY_API_KEY and TIDE_LLM_API_KEY only in .env.
-docker compose up --build -d
-curl -fsS http://127.0.0.1:8000/health
+docker build -t tide-mem:0.1.0-amc2026 .
+docker run --rm -p 8000:8000 \
+  -e TIDE_REQUIRE_AUTH=false \
+  -e TIDE_LLM_MODE=heuristic \
+  -e TIDE_LLM_REQUIRED=false \
+  -e TIDE_DB_PATH=/tmp/tide_mem.sqlite3 \
+  tide-mem:0.1.0-amc2026
 ```
 
-Run the contract smoke test:
+This no-key heuristic mode is for contract checks and public retrieval
+experiments. For the submitted full method, the platform should set
+`TIDE_LLM_MODE=api`, keep `TIDE_LLM_MODEL=gpt-4o-mini`, and inject
+`TIDE_LLM_API_KEY` through its protected runtime environment. Do not put a
+provider credential in this repository, commands, issues, or submission notes.
+
+Run a contract smoke test in another terminal:
 
 ```bash
-export TIDE_MEMORY_API_KEY='<the same local memory-system key>'
 python scripts/smoke_test.py --base-url http://127.0.0.1:8000
 ```
 
-Do not commit `.env` or place either key in commands, issues, screenshots, or
-public documentation.
+## Local public-data evaluation
 
-## Minimal public deployment
+The local harness supports the public
+[LoCoMo-Refined](https://github.com/mem-eval-suite/LoCoMo_refined) and
+[LongMemEval](https://github.com/xiaowu0162/LongMemEval) formats. It calls the
+same Add/Search API, measures evidence retrieval, and never needs a challenge
+key.
 
-The included [render.yaml](render.yaml) creates one Docker web service with a
-persistent SQLite disk, public HTTPS, a generated Memory System Key, and
-`gpt-4o-mini` configuration.
+LoCoMo-Refined textual subset:
 
-Open:
-
-```text
-https://render.com/deploy?repo=https://github.com/xiye7lai/TIDE-Mem
+```bash
+git clone https://github.com/mem-eval-suite/LoCoMo_refined.git /tmp/LoCoMo_refined
+python scripts/evaluate_retrieval.py locomo \
+  --conversations /tmp/LoCoMo_refined/data/public/conversations.jsonl \
+  --questions /tmp/LoCoMo_refined/data/public/questions.jsonl \
+  --output-dir /tmp/tide-eval/locomo-full \
+  --limit 50
 ```
 
-On Render:
+The default excludes caption-backed multimodal questions because this entry is
+for the Textual Memory track. Add `--include-multimodal` only for an explicitly
+caption-based experiment.
 
-1. review the Starter service and 1 GB persistent disk;
-2. enter `TIDE_LLM_API_KEY` only in Render's protected environment field;
-3. create the Blueprint and wait for `/health` to become healthy;
-4. copy the generated `TIDE_MEMORY_API_KEY` from Render's protected
-   Environment page;
-5. run `scripts/smoke_test.py` locally before requesting evaluation access.
+LongMemEval-S/cleaned:
 
-## Request the competition Evaluation Key
+```bash
+python scripts/evaluate_retrieval.py longmemeval \
+  --data /path/to/longmemeval_s_cleaned.json \
+  --output-dir /tmp/tide-eval/longmemeval-full \
+  --limit 20
+```
 
-On the challenge's **Submit Evaluation Request** form select:
+Each run writes:
+
+- `summary.json`: `RecallAny@K`, `RecallAll@K`, evidence recall, NDCG, MRR,
+  per-category aggregates, and Add/Search latency;
+- `retrieval.jsonl`: question-level ranked evidence and evidence mappings;
+- `answer_input.jsonl`: retrieved context for a separate public answer/judge
+  pipeline.
+
+Every summary is marked `proxy_public_retrieval` and has
+`official_leaderboard_score: null`. These numbers are useful for regression
+testing and tuning, but they are **not** official challenge scores. LoCoMo uses
+public message-level evidence IDs; LongMemEval uses public session-level
+evidence IDs. Questions without public evidence labels are excluded from the
+aggregate retrieval score.
+
+## Safe ablations
+
+Use the same public subset, concurrency, `top_k`, and a fresh database for each
+variant. The defaults always run the full initial method.
+
+| Variant | Runtime change |
+|---|---|
+| Full TIDE-Mem | `TIDE_MEMORY_VIEW=full`, `TIDE_TEMPORAL_BOOST=true` |
+| Raw evidence only | `TIDE_MEMORY_VIEW=raw` |
+| Structured cards only | `TIDE_MEMORY_VIEW=cards` |
+| No temporal state boost | `TIDE_TEMPORAL_BOOST=false` |
+| No LLM evidence rerank | `TIDE_RERANK_CANDIDATE_LIMIT=0` |
+| Fully local smoke baseline | `TIDE_LLM_MODE=heuristic` |
+
+Change the evaluation `--namespace` and `TIDE_DB_PATH` between variants so no
+previous memories carry over. Tune only on public data; do not infer private
+labels, hard-code benchmark answers, or share state across `user_id` values.
+
+## Academic code submission
+
+On the challenge submission form choose:
 
 - Leaderboard: **Academic leaderboard**
-- Method: **Provide Add/Search APIs**
+- Method: **Submit GitHub code for platform deployment**
 - System name: **TIDE-Mem**
 - Version name: **v0.1.0-amc2026**
-- Add API URL: `https://<service>.onrender.com/v1/memory/add`
-- Search API URL: `https://<service>.onrender.com/v1/memory/search`
-- Authentication: **X-Api-Key**
-- Project URL: `https://github.com/xiye7lai/TIDE-Mem`
+- Public repository: `https://github.com/xiye7lai/TIDE-Mem`
 
-Enter the generated Memory System Key only in the form's protected key field.
-The service must remain publicly reachable and stable for at least 30 days.
+Suggested run notes:
 
-Suggested submission note:
+> Build the repository root with Dockerfile and expose container port 8000.
+> Health: GET /health. Add: POST /v1/memory/add. Search: POST
+> /v1/memory/search. Set TIDE_REQUIRE_AUTH=false, TIDE_LLM_MODE=api,
+> TIDE_LLM_MODEL=gpt-4o-mini, and inject the model-provider credential only
+> through the protected runtime environment. Use one container worker because
+> SQLite is the persistent memory store. Search top_k supports 100.
 
-> TIDE-Mem v0.1.0-amc2026 is a synchronous FastAPI Add/Search memory service.
-> It uses immutable raw evidence plus gpt-4o-mini semantic cards, a temporal
-> state ledger, exact user_id isolation, SQLite FTS5 hybrid retrieval,
-> evidence-only reranking, and coverage-aware selection. Docker entrypoint:
-> Dockerfile. Add and Search concurrency: 16. Maximum top_k: 100. Evaluation
-> data is not logged and is deleted within 30 days.
+The form does not need a Leaderboard Key, Memory System Key, public HTTPS URL,
+or 30-day hosted service for this route. Pin the submitted source to a commit
+SHA so the evaluated code remains reproducible.
 
 ## Configuration
 
-| Variable | Required value or purpose |
+| Variable | Default or purpose |
 |---|---|
-| `TIDE_MEMORY_API_KEY` | Private key used by the evaluator |
-| `TIDE_LLM_API_KEY` | Private model-provider key |
+| `TIDE_LLM_API_KEY` | Protected provider credential for full API mode |
 | `TIDE_LLM_MODEL` | `gpt-4o-mini` |
-| `TIDE_DB_PATH` | Persistent SQLite path |
-| `TIDE_LLM_MAX_CONCURRENCY` | Default `16` |
-| `TIDE_TTL_DAYS` | Default `30` |
+| `TIDE_REQUIRE_AUTH` | `false` for platform code submission |
+| `TIDE_DB_PATH` | `/data/tide_mem.sqlite3` |
+| `TIDE_TTL_DAYS` | `30` |
+| `TIDE_LLM_MAX_CONCURRENCY` | `16` |
+| `TIDE_MEMORY_VIEW` | `full`, with `raw` and `cards` for ablations |
+| `TIDE_TEMPORAL_BOOST` | `true` |
+| `TIDE_RERANK_CANDIDATE_LIMIT` | `80`; use `0` for an ablation |
 
-See [.env.example](.env.example) for the remaining bounded retrieval settings.
+See [.env.example](.env.example) for the remaining bounded settings.
 
 ## Validation
 
@@ -161,16 +214,15 @@ bash -n deploy/docker-entrypoint.sh
 docker build -t tide-mem:0.1.0-amc2026 .
 ```
 
-The tests cover synchronous Add/Search behavior, authentication, exact
-`user_id` isolation, idempotency, `top_k`, temporal updates, and the full
-mocked API-mode chain.
+The tests cover synchronous Add/Search behavior, optional authentication,
+exact `user_id` isolation, idempotency, `top_k`, temporal updates, the mocked
+API-mode chain, public dataset adapters, and proxy retrieval metrics.
 
 ## Data handling
 
-Evaluation content is used only for evaluation. Request bodies and retrieved
-evidence are not written to application logs. Stored data expires after 30
-days by default. No benchmark labels, private evaluation examples, or
-hard-coded answers are included.
+Request bodies and retrieved evidence are not written to application logs.
+Stored data expires after 30 days by default. No private benchmark examples,
+labels, provider credentials, or hard-coded answers are included.
 
 ## License
 

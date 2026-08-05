@@ -174,13 +174,15 @@ The evaluated tag should fix:
 - temperature: 0;
 - extraction/rerank prompts in `tide_mem/llm.py`;
 - card/summary/candidate bounds in `.env`;
+- memory-view and temporal-boost settings (the evaluated defaults are
+  `TIDE_MEMORY_VIEW=full` and `TIDE_TEMPORAL_BOOST=true`);
 - dependency versions in `requirements.txt`;
 - database schema and ranking weights in source;
 - Git commit and Docker image digest.
 
-## 9. Initial ablation plan after first valid submission
+## 9. Public local ablations
 
-Do not delay the first application for a large experiment matrix. After a valid Smoke, use only public/reproducible subsets to compare:
+The public proxy in `scripts/evaluate_retrieval.py` can compare:
 
 1. raw episodic evidence only;
 2. structured cards only;
@@ -188,4 +190,6 @@ Do not delay the first application for a large experiment matrix. After a valid 
 4. dual view without evidence planner/reranker;
 5. full TIDE-Mem.
 
-Report retrieval/answer metrics supplied by the official pipeline, latency percentiles, LLM calls/tokens, and per-capability breakdown. Do not tune on private questions or infer private labels.
+It reports public-evidence retrieval metrics and latency percentiles. These are
+local proxy results, not official leaderboard scores. Do not tune on private
+questions, infer private labels, or carry memory across evaluation identities.

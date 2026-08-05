@@ -40,6 +40,8 @@ class Settings:
     max_summary_cards_per_add: int
     retrieval_candidate_limit: int
     rerank_candidate_limit: int
+    memory_view: str
+    temporal_boost: bool
     returned_content_max_chars: int
     ttl_days: int
     ttl_cleanup_interval_seconds: int
@@ -59,13 +61,20 @@ class Settings:
         if mode not in {"api", "heuristic"}:
             raise ValueError("TIDE_LLM_MODE must be 'api' or 'heuristic'")
 
+        memory_view = os.getenv("TIDE_MEMORY_VIEW", "full").strip().lower()
+        if memory_view not in {"full", "raw", "cards"}:
+            raise ValueError("TIDE_MEMORY_VIEW must be 'full', 'raw', or 'cards'")
+
         db_path = Path(os.getenv("TIDE_DB_PATH", "/data/tide_mem.sqlite3"))
         return cls(
             app_name="TIDE-Mem",
             version="0.1.0-amc2026",
             db_path=db_path,
             memory_api_key=os.getenv("TIDE_MEMORY_API_KEY", ""),
-            require_auth=_bool("TIDE_REQUIRE_AUTH", True),
+            # The Academic code-submission platform starts this container behind
+            # its own evaluator boundary and does not issue a Memory System Key.
+            # Standalone operators can still opt into X-Api-Key authentication.
+            require_auth=_bool("TIDE_REQUIRE_AUTH", False),
             llm_mode=mode,
             llm_api_base=os.getenv("TIDE_LLM_API_BASE", "https://api.openai.com/v1").rstrip("/"),
             llm_api_key=os.getenv("TIDE_LLM_API_KEY", os.getenv("OPENAI_API_KEY", "")),
@@ -79,6 +88,8 @@ class Settings:
             max_summary_cards_per_add=_int("TIDE_MAX_SUMMARY_CARDS_PER_ADD", 4, 0),
             retrieval_candidate_limit=_int("TIDE_RETRIEVAL_CANDIDATE_LIMIT", 220, 20),
             rerank_candidate_limit=_int("TIDE_RERANK_CANDIDATE_LIMIT", 80, 0),
+            memory_view=memory_view,
+            temporal_boost=_bool("TIDE_TEMPORAL_BOOST", True),
             returned_content_max_chars=_int("TIDE_RETURNED_CONTENT_MAX_CHARS", 1800, 256),
             ttl_days=_int("TIDE_TTL_DAYS", 30, 1),
             ttl_cleanup_interval_seconds=_int("TIDE_TTL_CLEANUP_INTERVAL_SECONDS", 21600, 300),

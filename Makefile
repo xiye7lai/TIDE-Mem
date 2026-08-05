@@ -1,4 +1,4 @@
-.PHONY: install test check run docker-up docker-down
+.PHONY: install test check run docker-build
 
 install:
 	python -m pip install -r requirements-dev.txt
@@ -13,8 +13,5 @@ check: test
 run:
 	uvicorn tide_mem.api:app --host 0.0.0.0 --port 8000
 
-docker-up:
-	docker compose up --build -d
-
-docker-down:
-	docker compose down
+docker-build:
+	docker build --tag tide-mem:0.1.0-amc2026 .

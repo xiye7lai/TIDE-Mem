@@ -19,3 +19,4 @@ venv/
 dist/
 build/
 *.egg-info/
+eval-results/

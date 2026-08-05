@@ -40,7 +40,7 @@ def main() -> int:
     parser.add_argument(
         "--memory-key",
         default=os.getenv("TIDE_MEMORY_API_KEY", ""),
-        help="Private Memory System Key; defaults to TIDE_MEMORY_API_KEY",
+        help="Optional standalone API key; defaults to TIDE_MEMORY_API_KEY",
     )
     parser.add_argument(
         "--auth-mode",
