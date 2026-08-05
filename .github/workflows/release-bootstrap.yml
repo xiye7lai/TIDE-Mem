@@ -1,0 +1,40 @@
+name: release-bootstrap
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  bootstrap:
+    if: github.event.head_commit.message == 'Bootstrap AMC 2026 release'
+    runs-on: ubuntu-latest
+    env:
+      TAG: v0.1.0-amc2026
+    steps:
+      - name: Check out the frozen source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create annotated tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Agent Memory Challenge 2026 initial submission"
+          git push origin "$TAG"
+          gh release create "$TAG" \
+            --title "TIDE-Mem v0.1.0-amc2026" \
+            --notes "Initial public Agent Memory Challenge 2026 release. The immutable GHCR digest is attached by the container workflow."
+
+      - name: Dispatch immutable container build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run container.yml --ref "$TAG"
