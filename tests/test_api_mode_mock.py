@@ -20,6 +20,7 @@ def test_full_api_mode_chain_with_mocked_gpt4o_mini(tmp_path):
         require_auth=True,
         llm_mode="api",
         llm_api_key="mock-provider-key",
+        llm_reasoning_effort="none",
         llm_required=True,
         llm_max_retries=0,
         rerank_candidate_limit=20,
@@ -33,6 +34,7 @@ def test_full_api_mode_chain_with_mocked_gpt4o_mini(tmp_path):
         user = payload["messages"][1]["content"]
         assert payload["model"] == "gpt-4o-mini"
         assert payload["temperature"] == 0
+        assert payload["reasoning_effort"] == "none"
         if "memory-writing component" in system:
             body = {
                 "memory_cards": [

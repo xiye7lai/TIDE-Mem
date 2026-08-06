@@ -63,9 +63,33 @@ def unique_preserve(values: Iterable[str], *, casefold: bool = True) -> list[str
 
 
 def fts_query(value: str, max_terms: int = 24) -> str:
-    terms = unique_preserve(tokenize(value))[:max_terms]
+    # FTS5's unicode tokenizer has no English stemming. Add a deliberately
+    # small set of morphology variants so natural query wording such as
+    # ``play``/``playing`` and ``move``/``moved`` reaches the same evidence.
+    # Prefix matches retain exact entity spellings while covering suffixes.
+    expanded: list[str] = []
+    for term in unique_preserve(tokenize(value)):
+        expanded.append(term)
+        if len(term) >= 5 and term.endswith("ies"):
+            expanded.append(f"{term[:-3]}y")
+        elif len(term) >= 5 and term.endswith("ing"):
+            root = term[:-3]
+            expanded.extend([root, f"{root}e"])
+            if len(root) >= 3 and root[-1] == root[-2]:
+                expanded.append(root[:-1])
+        elif len(term) >= 4 and term.endswith("ed"):
+            root = term[:-2]
+            expanded.extend([root, term[:-1]])
+            if len(root) >= 3 and root[-1] == root[-2]:
+                expanded.append(root[:-1])
+        elif len(term) >= 5 and term.endswith("es"):
+            expanded.extend([term[:-2], term[:-1]])
+        elif len(term) >= 5 and term.endswith("s"):
+            expanded.append(term[:-1])
+
+    terms = unique_preserve(expanded)[:max_terms]
     safe = [term.replace('"', '""') for term in terms if len(term) > 1 or term.isdigit()]
-    return " OR ".join(f'"{term}"' for term in safe)
+    return " OR ".join(f'"{term}"*' if len(term) >= 3 else f'"{term}"' for term in safe)
 
 
 def split_sentences(value: str, max_sentences: int = 24) -> list[str]:

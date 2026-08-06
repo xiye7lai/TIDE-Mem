@@ -31,6 +31,7 @@ class Settings:
     llm_api_base: str
     llm_api_key: str
     llm_model: str
+    llm_reasoning_effort: str
     enforce_gpt4o_mini: bool
     llm_required: bool
     llm_timeout_seconds: int
@@ -65,6 +66,13 @@ class Settings:
         if memory_view not in {"full", "raw", "cards"}:
             raise ValueError("TIDE_MEMORY_VIEW must be 'full', 'raw', or 'cards'")
 
+        reasoning_effort = os.getenv("TIDE_LLM_REASONING_EFFORT", "").strip().lower()
+        if reasoning_effort not in {"", "none", "low", "medium", "high", "xhigh", "max"}:
+            raise ValueError(
+                "TIDE_LLM_REASONING_EFFORT must be empty, none, low, medium, "
+                "high, xhigh, or max"
+            )
+
         db_path = Path(os.getenv("TIDE_DB_PATH", "/data/tide_mem.sqlite3"))
         return cls(
             app_name="TIDE-Mem",
@@ -79,6 +87,7 @@ class Settings:
             llm_api_base=os.getenv("TIDE_LLM_API_BASE", "https://api.openai.com/v1").rstrip("/"),
             llm_api_key=os.getenv("TIDE_LLM_API_KEY", os.getenv("OPENAI_API_KEY", "")),
             llm_model=model,
+            llm_reasoning_effort=reasoning_effort,
             enforce_gpt4o_mini=enforce,
             llm_required=_bool("TIDE_LLM_REQUIRED", True),
             llm_timeout_seconds=_int("TIDE_LLM_TIMEOUT_SECONDS", 120, 10),
@@ -87,7 +96,7 @@ class Settings:
             max_cards_per_add=_int("TIDE_MAX_CARDS_PER_ADD", 24, 1),
             max_summary_cards_per_add=_int("TIDE_MAX_SUMMARY_CARDS_PER_ADD", 4, 0),
             retrieval_candidate_limit=_int("TIDE_RETRIEVAL_CANDIDATE_LIMIT", 220, 20),
-            rerank_candidate_limit=_int("TIDE_RERANK_CANDIDATE_LIMIT", 80, 0),
+            rerank_candidate_limit=_int("TIDE_RERANK_CANDIDATE_LIMIT", 20, 0),
             memory_view=memory_view,
             temporal_boost=_bool("TIDE_TEMPORAL_BOOST", True),
             returned_content_max_chars=_int("TIDE_RETURNED_CONTENT_MAX_CHARS", 1800, 256),

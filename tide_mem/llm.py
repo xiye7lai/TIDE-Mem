@@ -60,6 +60,8 @@ class LLMClient:
             "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
         }
+        if self.settings.llm_reasoning_effort:
+            payload["reasoning_effort"] = self.settings.llm_reasoning_effort
         headers = {
             "Authorization": f"Bearer {self.settings.llm_api_key}",
             "Content-Type": "application/json",

@@ -12,6 +12,8 @@ import httpx
 
 
 def _headers(key: str, mode: str) -> dict[str, str]:
+    if mode == "none":
+        return {"Content-Type": "application/json"}
     if mode == "x-api-key":
         return {"X-Api-Key": key, "Content-Type": "application/json"}
     if mode == "bearer":
@@ -44,16 +46,21 @@ def main() -> int:
     )
     parser.add_argument(
         "--auth-mode",
-        choices=["x-api-key", "bearer", "token"],
-        default="x-api-key",
+        choices=["none", "x-api-key", "bearer", "token"],
+        default=None,
+        help=(
+            "authentication scheme; defaults to x-api-key when a memory key "
+            "is supplied and none otherwise"
+        ),
     )
     parser.add_argument("--timeout", type=float, default=180.0)
     args = parser.parse_args()
-    if not args.memory_key:
-        parser.error("provide --memory-key or set TIDE_MEMORY_API_KEY")
+    auth_mode = args.auth_mode or ("x-api-key" if args.memory_key else "none")
+    if auth_mode != "none" and not args.memory_key:
+        parser.error("provide --memory-key or set TIDE_MEMORY_API_KEY for authenticated modes")
 
     base_url = args.base_url.rstrip("/")
-    headers = _headers(args.memory_key, args.auth_mode)
+    headers = _headers(args.memory_key, auth_mode)
     nonce = secrets.token_hex(8)
     canary = f"TIDE-CANARY-{nonce.upper()}"
     user_a = f"smoke:user:a:{nonce}"
@@ -74,8 +81,12 @@ def main() -> int:
             "session_id": session_id,
         }
         unauth = client.post(f"{base_url}/v1/memory/add", json=unauth_payload)
-        if unauth.status_code != 401:
-            raise AssertionError(f"auth: expected unauthenticated Add HTTP 401, got {unauth.status_code}")
+        expected_unauth_status = 200 if auth_mode == "none" else 401
+        if unauth.status_code != expected_unauth_status:
+            raise AssertionError(
+                "auth: expected unauthenticated Add HTTP "
+                f"{expected_unauth_status}, got {unauth.status_code}"
+            )
 
         add_payload = {
             "request_id": request_id,
@@ -176,7 +187,11 @@ def main() -> int:
                 "base_url": base_url,
                 "checks": [
                     "public health",
-                    "private Add/Search auth",
+                    (
+                        "unauthenticated Add/Search"
+                        if auth_mode == "none"
+                        else "private Add/Search auth"
+                    ),
                     "exact synchronous Add response",
                     "immediate retrieval",
                     "top_k",
