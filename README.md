@@ -194,15 +194,18 @@ SHA so the evaluated code remains reproducible.
 |---|---|
 | `TIDE_LLM_API_KEY` | Protected provider credential for full API mode |
 | `TIDE_LLM_MODEL` | `gpt-4o-mini` |
+| `TIDE_LLM_REASONING_EFFORT` | Empty for the submitted model; optional compatibility knob for local alternate-model experiments |
 | `TIDE_REQUIRE_AUTH` | `false` for platform code submission |
 | `TIDE_DB_PATH` | `/data/tide_mem.sqlite3` |
 | `TIDE_TTL_DAYS` | `30` |
 | `TIDE_LLM_MAX_CONCURRENCY` | `16` |
 | `TIDE_MEMORY_VIEW` | `full`, with `raw` and `cards` for ablations |
 | `TIDE_TEMPORAL_BOOST` | `true` |
-| `TIDE_RERANK_CANDIDATE_LIMIT` | `80`; use `0` for an ablation |
+| `TIDE_RERANK_CANDIDATE_LIMIT` | `20`; use `0` for an ablation |
 
 See [.env.example](.env.example) for the remaining bounded settings.
+See [docs/PUBLIC_EVALUATION.md](docs/PUBLIC_EVALUATION.md) for the reproducible
+public proxy experiment and its limitations.
 
 ## Validation
 

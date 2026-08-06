@@ -27,6 +27,8 @@ from tide_mem.text import stable_id
 
 
 DEFAULT_KS = (1, 3, 5, 10, 30, 50, 100)
+MAX_ADD_MESSAGES = 20
+MAX_ADD_WORDS = 2_000
 _SOURCE_HEADER_RE = re.compile(r"session=([^|\]]+)")
 _SOURCE_INDEX_RE = re.compile(r"source_messages=(\[[^\]]*\])")
 T = TypeVar("T")
@@ -177,6 +179,21 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def evidence_units(values: Any) -> set[str]:
+    """Normalize public evidence labels, including semicolon-packed IDs."""
+
+    if not isinstance(values, list):
+        values = [values]
+    units: set[str] = set()
+    for value in values:
+        units.update(
+            part.strip()
+            for part in str(value).split(";")
+            if part.strip()
+        )
+    return units
+
+
 def read_json_array(path: Path) -> list[dict[str, Any]]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
@@ -224,6 +241,94 @@ def timestamp_ms(value: Any, fallback_index: int = 0) -> int:
     return 946684800000 + fallback_index * 86_400_000
 
 
+def chunk_messages(
+    messages: list[dict[str, Any]],
+    source_units: list[str],
+    max_messages: int = MAX_ADD_MESSAGES,
+    max_words: int = MAX_ADD_WORDS,
+) -> list[tuple[list[dict[str, Any]], list[str]]]:
+    """Match the public evaluator's bounded synchronous Add payloads."""
+
+    if len(messages) != len(source_units):
+        raise ValueError("messages and source evidence units must align")
+
+    expanded: list[tuple[dict[str, Any], str]] = []
+    for message, source_unit in zip(messages, source_units):
+        content = str(message.get("content", ""))
+        words = content.split()
+        if len(words) <= max_words:
+            expanded.append((message, source_unit))
+            continue
+
+        # Oversized individual messages are split at sentence boundaries when
+        # possible, then at a bounded word boundary as a deterministic fallback.
+        sentences = re.split(r"(?<=[.!?])\s+", content)
+        fragments: list[str] = []
+        current: list[str] = []
+        current_words = 0
+        for sentence in sentences:
+            sentence_words = sentence.split()
+            while len(sentence_words) > max_words:
+                if current:
+                    fragments.append(" ".join(current))
+                    current = []
+                    current_words = 0
+                fragments.append(" ".join(sentence_words[:max_words]))
+                sentence_words = sentence_words[max_words:]
+            if current and current_words + len(sentence_words) > max_words:
+                fragments.append(" ".join(current))
+                current = []
+                current_words = 0
+            current.extend(sentence_words)
+            current_words += len(sentence_words)
+        if current:
+            fragments.append(" ".join(current))
+        for fragment in fragments:
+            split_message = dict(message)
+            split_message["content"] = fragment
+            expanded.append((split_message, source_unit))
+
+    chunks: list[tuple[list[dict[str, Any]], list[str]]] = []
+    chunk_messages_: list[dict[str, Any]] = []
+    chunk_units: list[str] = []
+    chunk_words = 0
+    for message, source_unit in expanded:
+        word_count = len(str(message.get("content", "")).split())
+        if chunk_messages_ and (
+            len(chunk_messages_) >= max_messages or chunk_words + word_count > max_words
+        ):
+            chunks.append((chunk_messages_, chunk_units))
+            chunk_messages_, chunk_units, chunk_words = [], [], 0
+        chunk_messages_.append(message)
+        chunk_units.append(source_unit)
+        chunk_words += word_count
+    if chunk_messages_:
+        chunks.append((chunk_messages_, chunk_units))
+    return chunks
+
+
+def append_chunked_jobs(
+    jobs: list[AddJob],
+    evidence: EvidenceIndex,
+    *,
+    base_request_id: str,
+    base_session_id: str,
+    user_id: str,
+    messages: list[dict[str, Any]],
+    source_units: list[str],
+) -> None:
+    chunks = chunk_messages(messages, source_units)
+    for chunk_index, (chunk, chunk_units) in enumerate(chunks, start=1):
+        if len(chunks) == 1:
+            request_id = base_request_id
+            session_id = base_session_id
+        else:
+            request_id = f"{base_request_id}:chunk:{chunk_index}"
+            session_id = f"{base_session_id}:chunk:{chunk_index}"
+        jobs.append(AddJob(request_id, user_id, session_id, chunk))
+        evidence.add_session(request_id, session_id, chunk_units)
+
+
 def locomo_inputs(
     conversations: list[dict[str, Any]],
     questions: list[dict[str, Any]],
@@ -252,7 +357,7 @@ def locomo_inputs(
                 ident=str(item["qa_id"]),
                 question=str(item["question"]),
                 gold_answer=item.get("answer", []),
-                gold_evidence={str(value) for value in item.get("evidence", [])},
+                gold_evidence=evidence_units(item.get("evidence", [])),
                 user_id=f"{namespace}:locomo:{sample_id}",
                 category=str(item.get("category", "unknown")),
                 speaker_1=str(item.get("speaker_a", "speaker 1")),
@@ -287,9 +392,15 @@ def locomo_inputs(
                 )
             if not messages:
                 continue
-            job = AddJob(request_id, user_id, session_id, messages)
-            jobs.append(job)
-            evidence.add_session(request_id, session_id, source_units)
+            append_chunked_jobs(
+                jobs,
+                evidence,
+                base_request_id=request_id,
+                base_session_id=session_id,
+                user_id=user_id,
+                messages=messages,
+                source_units=source_units,
+            )
     return cases, jobs, evidence
 
 
@@ -339,14 +450,16 @@ def longmemeval_inputs(
             ]
             if not messages:
                 continue
-            job = AddJob(request_id, user_id, session_id, messages)
-            jobs.append(job)
             # Session-level evaluation maps every record in a session to the
             # original public session ID.
-            evidence.add_session(
-                request_id,
-                session_id,
-                [str(source_session_id)] * len(messages),
+            append_chunked_jobs(
+                jobs,
+                evidence,
+                base_request_id=request_id,
+                base_session_id=session_id,
+                user_id=user_id,
+                messages=messages,
+                source_units=[str(source_session_id)] * len(messages),
             )
     return cases, jobs, evidence
 

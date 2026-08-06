@@ -9,7 +9,7 @@ from .config import Settings
 from .db import MemoryDB
 from .llm import LLMClient, QueryPlan
 from .models import SearchItem, SearchRequest, SearchResponse
-from .text import jaccard, json_loads, tokenize, truncate, unique_preserve
+from .text import json_loads, tokenize, truncate, unique_preserve
 
 
 class RetrievalService:
@@ -52,7 +52,15 @@ class RetrievalService:
         query: str,
         plan: QueryPlan,
     ) -> dict[str, dict[str, Any]]:
-        queries = unique_preserve([query, *plan.subqueries, *plan.entities, *plan.time_terms])[:12]
+        queries = unique_preserve(
+            [
+                query,
+                *plan.subqueries,
+                *plan.coverage_slots,
+                *plan.entities,
+                *plan.time_terms,
+            ]
+        )[:12]
         per_query = max(30, min(100, self.settings.retrieval_candidate_limit // max(1, len(queries))))
 
         fts_tasks = [self.db.fts_search(user_id, item, per_query) for item in queries]
@@ -187,6 +195,15 @@ class RetrievalService:
         pool = ranked[: max(top_k * 4, 120)]
         coverage_texts = unique_preserve([*plan.coverage_slots, *plan.entities, *plan.time_terms])
         slot_tokens = [set(tokenize(slot)) for slot in coverage_texts if tokenize(slot)]
+        row_tokens = {
+            row["id"]: set(tokenize(row["searchable_text"]))
+            for row in pool
+        }
+        content_tokens = {
+            row["id"]: set(tokenize(row["content"]))
+            for row in pool
+        }
+        max_duplicate = {row["id"]: 0.0 for row in pool}
         uncovered = set(range(len(slot_tokens)))
         selected: list[dict[str, Any]] = []
         selected_ids: set[str] = set()
@@ -197,17 +214,14 @@ class RetrievalService:
             for index, row in enumerate(pool):
                 if row["id"] in selected_ids:
                     continue
-                row_tokens = set(tokenize(row["searchable_text"]))
+                candidate_tokens = row_tokens[row["id"]]
                 covered_now = sum(
                     1
                     for slot_index in uncovered
-                    if slot_tokens[slot_index] and len(slot_tokens[slot_index] & row_tokens) > 0
+                    if slot_tokens[slot_index]
+                    and len(slot_tokens[slot_index] & candidate_tokens) > 0
                 )
-                duplicate = max(
-                    (jaccard(row["content"], chosen["content"]) for chosen in selected),
-                    default=0.0,
-                )
-                diversity_penalty = 0.13 * duplicate
+                diversity_penalty = 0.13 * max_duplicate[row["id"]]
                 if plan.needs_multiple_evidence or plan.question_type in {"list", "count", "multi_hop"}:
                     diversity_penalty *= 0.45
                 kind_bonus = 0.015 if row.get("kind", "").startswith("card_") else 0.0
@@ -221,12 +235,21 @@ class RetrievalService:
             chosen = pool.pop(best_index)
             selected.append(chosen)
             selected_ids.add(chosen["id"])
-            chosen_tokens = set(tokenize(chosen["searchable_text"]))
+            chosen_tokens = row_tokens[chosen["id"]]
             uncovered = {
                 slot_index
                 for slot_index in uncovered
                 if not (slot_tokens[slot_index] & chosen_tokens)
             }
+            for row in pool:
+                ident = row["id"]
+                left = content_tokens[ident]
+                right = content_tokens[chosen["id"]]
+                duplicate = len(left & right) / len(left | right) if left and right else 0.0
+                max_duplicate[ident] = max(
+                    max_duplicate[ident],
+                    duplicate,
+                )
 
         # Preserve rank ordering expected by the evaluator after coverage-aware set
         # construction. Scores remain evidence-relevance scores, never answers.

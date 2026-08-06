@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from scripts.evaluate_retrieval import (
     EvidenceIndex,
+    chunk_messages,
+    evidence_units,
     locomo_inputs,
     longmemeval_inputs,
     metrics_for_case,
@@ -135,4 +137,36 @@ def test_longmemeval_adapter_uses_question_isolation_and_session_labels():
     assert timestamp_ms("2025/03/04 (Tue) 10:30") == 1741084200000
     assert evidence.resolve({"id": stable_id(jobs[0].request_id, "raw", 0)}) == {
         "answer-session"
+    }
+
+
+def test_public_adapter_chunks_adds_at_official_message_limit():
+    messages = [
+        {"role": "user", "content": f"message {index}", "timestamp": index}
+        for index in range(21)
+    ]
+    source_units = [f"D1:{index}" for index in range(21)]
+
+    chunks = chunk_messages(messages, source_units)
+
+    assert [len(chunk) for chunk, _ in chunks] == [20, 1]
+    assert chunks[0][1] == source_units[:20]
+    assert chunks[1][1] == source_units[20:]
+
+
+def test_public_adapter_splits_oversized_single_message():
+    messages = [{"role": "user", "content": "word " * 2001, "timestamp": 1}]
+
+    chunks = chunk_messages(messages, ["D1:1"])
+
+    assert [len(chunk) for chunk, _ in chunks] == [1, 1]
+    assert all(len(chunk[0]["content"].split()) <= 2000 for chunk, _ in chunks)
+    assert [units for _, units in chunks] == [["D1:1"], ["D1:1"]]
+
+
+def test_public_adapter_normalizes_semicolon_packed_evidence_ids():
+    assert evidence_units(["D8:6; D9:17", "D10:3"]) == {
+        "D8:6",
+        "D9:17",
+        "D10:3",
     }
