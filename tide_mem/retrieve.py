@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 from collections import defaultdict
 from typing import Any
 
@@ -26,6 +27,86 @@ class RetrievalService:
         if view == "raw":
             return kind in {"raw_episode", "raw_window"}
         return kind.startswith("card_") or kind == "session_summary"
+
+    @staticmethod
+    def _needs_diverse_evidence(query: str, plan: QueryPlan) -> bool:
+        if plan.needs_multiple_evidence or plan.question_type in {
+            "list",
+            "count",
+            "multi_hop",
+            "update",
+        }:
+            return True
+        lowered = query.casefold()
+        return bool(
+            re.search(
+                r"\b(both|all|activities|classes|instruments|artists|bands|"
+                r"ways|things|events|changes|jobs|dogs)\b",
+                lowered,
+            )
+            or lowered.startswith("how long ")
+            or lowered.startswith("what happened ")
+            or lowered.startswith("where ")
+            or re.match(r"^what\s+(state|city|country|place)\b", lowered)
+            or "relationship status" in lowered
+            or re.match(r"^has\b.+\btried\b", lowered)
+        )
+
+    @staticmethod
+    def _source_tokens(row: dict[str, Any]) -> set[str]:
+        session_id = str(row.get("session_id", ""))
+        indexes = json_loads(row.get("source_indices_json"), [])
+        if not isinstance(indexes, list) or not indexes:
+            return {f"{session_id}:record:{row.get('id', '')}"}
+        return {f"{session_id}:message:{index}" for index in indexes}
+
+    def _diverse_rerank_candidates(
+        self,
+        preliminary: list[dict[str, Any]],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Expose complementary sources to the bounded LLM rerank window."""
+
+        if limit <= 0 or len(preliminary) <= limit:
+            return preliminary
+        pool = preliminary[: max(100, limit * 5)]
+        selected = list(pool[: min(4, limit)])
+        remaining = [row for row in pool if row not in selected]
+        used_sources = set().union(*(self._source_tokens(row) for row in selected))
+        used_sessions = {str(row.get("session_id", "")) for row in selected}
+        selected_content = [set(tokenize(str(row.get("content", "")))) for row in selected]
+
+        while remaining and len(selected) < limit:
+            best_index = 0
+            best_utility = -1e9
+            for index, row in enumerate(remaining):
+                sources = self._source_tokens(row)
+                source_novelty = len(sources - used_sources) / max(1, len(sources))
+                session_novelty = float(str(row.get("session_id", "")) not in used_sessions)
+                tokens = set(tokenize(str(row.get("content", ""))))
+                duplicate = max(
+                    (
+                        len(tokens & chosen) / len(tokens | chosen)
+                        for chosen in selected_content
+                        if tokens and chosen
+                    ),
+                    default=0.0,
+                )
+                utility = (
+                    float(row.get("heuristic_score", 0.0))
+                    + 0.14 * source_novelty
+                    + 0.05 * session_novelty
+                    - 0.08 * duplicate
+                )
+                if utility > best_utility:
+                    best_utility = utility
+                    best_index = index
+            chosen = remaining.pop(best_index)
+            selected.append(chosen)
+            used_sources.update(self._source_tokens(chosen))
+            used_sessions.add(str(chosen.get("session_id", "")))
+            selected_content.append(set(tokenize(str(chosen.get("content", "")))))
+        return selected
 
     async def search(self, request: SearchRequest) -> SearchResponse:
         plan = await self.llm.plan_query(request.query, request.options)
@@ -122,11 +203,107 @@ class RetrievalService:
         plan: QueryPlan,
         candidates: dict[str, dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        diversify_sources = self._needs_diverse_evidence(request.query, plan)
+        values = list(candidates.values())
+        self._apply_heuristic_scores(request, plan, values)
+        preliminary = sorted(
+            values,
+            key=lambda row: (row["heuristic_score"], row.get("ordering_ms", 0)),
+            reverse=True,
+        )
+
+        if diversify_sources:
+            session_ids: list[str] = []
+            anchor_rrf: dict[str, float] = {}
+            for row in preliminary[:80]:
+                session_id = str(row.get("session_id", ""))
+                if not session_id or session_id in anchor_rrf:
+                    continue
+                session_ids.append(session_id)
+                anchor_rrf[session_id] = float(row.get("rrf_score", 0.0))
+                if len(session_ids) >= 8:
+                    break
+            expanded = await self.db.session_memories(
+                request.user_id,
+                session_ids,
+                limit_per_session=80,
+            )
+            for row in expanded:
+                ident = str(row.get("id", ""))
+                if ident in candidates or not self._view_allows(row):
+                    continue
+                session_id = str(row.get("session_id", ""))
+                row["rrf_score"] = 0.35 * anchor_rrf.get(session_id, 0.0)
+                row["channels"] = ["session_expand"]
+                candidates[ident] = row
+            values = list(candidates.values())
+            self._apply_heuristic_scores(request, plan, values)
+            preliminary = sorted(
+                values,
+                key=lambda row: (row["heuristic_score"], row.get("ordering_ms", 0)),
+                reverse=True,
+            )[: max(400, self.settings.retrieval_candidate_limit * 3)]
+
+        rerank_candidates = preliminary
+        if diversify_sources:
+            rerank_candidates = self._diverse_rerank_candidates(
+                preliminary,
+                self.settings.rerank_candidate_limit,
+            )
+        llm_ranked = await self.llm.rerank_evidence(
+            request.query,
+            request.options,
+            plan,
+            rerank_candidates,
+        )
+        llm_scores: dict[str, float] = {}
+        for rank, (ident, relevance) in enumerate(llm_ranked, start=1):
+            position = 1.0 / math.log2(rank + 1.0)
+            llm_scores[ident] = 0.70 * relevance + 0.30 * position
+
+        session_llm_scores: dict[str, float] = {}
+        rerank_by_id = {str(row.get("id", "")): row for row in rerank_candidates}
+        for ident, score in llm_scores.items():
+            row = rerank_by_id.get(ident)
+            if row is None:
+                continue
+            session_id = str(row.get("session_id", ""))
+            session_llm_scores[session_id] = max(
+                session_llm_scores.get(session_id, 0.0),
+                score,
+            )
+
+        for row in preliminary:
+            if llm_scores:
+                llm_score = llm_scores.get(row["id"], 0.0)
+                row["final_score"] = 0.58 * row["heuristic_score"] + 0.42 * llm_score
+            else:
+                row["final_score"] = row["heuristic_score"]
+            if "session_expand" in row.get("channels", []):
+                row["final_score"] = min(
+                    1.0,
+                    row["final_score"]
+                    + 0.07 * session_llm_scores.get(str(row.get("session_id", "")), 0.0),
+                )
+            if self.settings.temporal_boost and plan.prefer_latest and row.get("is_current"):
+                row["final_score"] = min(1.0, row["final_score"] + 0.04)
+
+        return sorted(
+            preliminary,
+            key=lambda row: (row["final_score"], row.get("ordering_ms", 0)),
+            reverse=True,
+        )
+
+    def _apply_heuristic_scores(
+        self,
+        request: SearchRequest,
+        plan: QueryPlan,
+        values: list[dict[str, Any]],
+    ) -> None:
         query_tokens = set(tokenize(request.query))
         entity_terms = [term.casefold() for term in plan.entities]
         time_terms = [term.casefold() for term in plan.time_terms]
 
-        values = list(candidates.values())
         max_rrf = max((row["rrf_score"] for row in values), default=1.0) or 1.0
         for row in values:
             searchable = row["searchable_text"].casefold()
@@ -152,37 +329,6 @@ class RetrievalService:
             )
             row["heuristic_score"] = max(0.0, min(1.0, heuristic))
 
-        preliminary = sorted(
-            values,
-            key=lambda row: (row["heuristic_score"], row.get("ordering_ms", 0)),
-            reverse=True,
-        )
-        llm_ranked = await self.llm.rerank_evidence(
-            request.query,
-            request.options,
-            plan,
-            preliminary,
-        )
-        llm_scores: dict[str, float] = {}
-        for rank, (ident, relevance) in enumerate(llm_ranked, start=1):
-            position = 1.0 / math.log2(rank + 1.0)
-            llm_scores[ident] = 0.70 * relevance + 0.30 * position
-
-        for row in preliminary:
-            if llm_scores:
-                llm_score = llm_scores.get(row["id"], 0.0)
-                row["final_score"] = 0.58 * row["heuristic_score"] + 0.42 * llm_score
-            else:
-                row["final_score"] = row["heuristic_score"]
-            if self.settings.temporal_boost and plan.prefer_latest and row.get("is_current"):
-                row["final_score"] = min(1.0, row["final_score"] + 0.04)
-
-        return sorted(
-            preliminary,
-            key=lambda row: (row["final_score"], row.get("ordering_ms", 0)),
-            reverse=True,
-        )
-
     def _coverage_select(
         self,
         ranked: list[dict[str, Any]],
@@ -207,6 +353,9 @@ class RetrievalService:
         uncovered = set(range(len(slot_tokens)))
         selected: list[dict[str, Any]] = []
         selected_ids: set[str] = set()
+        used_sources: set[str] = set()
+        used_sessions: set[str] = set()
+        diversify_sources = self._needs_diverse_evidence(query, plan)
 
         while pool and len(selected) < top_k:
             best_index = -1
@@ -225,7 +374,21 @@ class RetrievalService:
                 if plan.needs_multiple_evidence or plan.question_type in {"list", "count", "multi_hop"}:
                     diversity_penalty *= 0.45
                 kind_bonus = 0.015 if row.get("kind", "").startswith("card_") else 0.0
-                utility = row["final_score"] + 0.035 * covered_now + kind_bonus - diversity_penalty
+                source_bonus = 0.0
+                if diversify_sources:
+                    sources = self._source_tokens(row)
+                    source_bonus += 0.035 * (
+                        len(sources - used_sources) / max(1, len(sources))
+                    )
+                    if str(row.get("session_id", "")) not in used_sessions:
+                        source_bonus += 0.015
+                utility = (
+                    row["final_score"]
+                    + 0.035 * covered_now
+                    + kind_bonus
+                    + source_bonus
+                    - diversity_penalty
+                )
                 if utility > best_utility:
                     best_utility = utility
                     best_index = index
@@ -235,6 +398,8 @@ class RetrievalService:
             chosen = pool.pop(best_index)
             selected.append(chosen)
             selected_ids.add(chosen["id"])
+            used_sources.update(self._source_tokens(chosen))
+            used_sessions.add(str(chosen.get("session_id", "")))
             chosen_tokens = row_tokens[chosen["id"]]
             uncovered = {
                 slot_index

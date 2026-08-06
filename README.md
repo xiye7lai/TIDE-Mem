@@ -9,7 +9,7 @@ public-data retrieval proxy. It does not require a challenge Leaderboard Key,
 a public deployment, or Render. The challenge platform can build the
 Dockerfile and run the Add/Search service inside its evaluator environment.
 
-## Initial method
+## Method
 
 TIDE-Mem combines four ideas:
 
@@ -21,9 +21,10 @@ TIDE-Mem combines four ideas:
 3. **User-isolated hybrid retrieval.** SQLite FTS5, exact entity/time matching,
    recency and state signals are fused with reciprocal-rank fusion. Every read
    and write is scoped by the exact `user_id`.
-4. **Evidence-only reranking.** `gpt-4o-mini` plans evidence needs and reranks
-   candidate IDs; a coverage-aware selector reduces duplicate results for
-   multi-hop, list, and count questions.
+4. **Source-diverse evidence reranking.** `gpt-4o-mini` plans evidence needs
+   and reranks candidate IDs. Multi-evidence and indirect-location questions
+   expand likely sessions locally, expose complementary source messages to the
+   bounded reranker, and use a coverage selector to reduce duplicate results.
 
 Search returns ranked memory evidence, never a final answer. The complete
 method is in [docs/METHOD.md](docs/METHOD.md).
