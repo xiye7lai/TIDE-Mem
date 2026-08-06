@@ -339,6 +339,46 @@ class MemoryDB:
         finally:
             connection.close()
 
+    async def session_memories(
+        self,
+        user_id: str,
+        session_ids: list[str],
+        limit_per_session: int = 80,
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._session_memories_sync,
+            user_id,
+            session_ids,
+            limit_per_session,
+        )
+
+    def _session_memories_sync(
+        self,
+        user_id: str,
+        session_ids: list[str],
+        limit_per_session: int,
+    ) -> list[dict[str, Any]]:
+        clean = list(dict.fromkeys(item for item in session_ids if item))[:12]
+        if not clean or limit_per_session <= 0:
+            return []
+        connection = self._connect()
+        try:
+            output: list[dict[str, Any]] = []
+            for session_id in clean:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM memories
+                    WHERE user_id=? AND session_id=?
+                    ORDER BY is_current DESC, ordering_ms DESC
+                    LIMIT ?
+                    """,
+                    (user_id, session_id, limit_per_session),
+                ).fetchall()
+                output.extend(dict(row) for row in rows)
+            return output
+        finally:
+            connection.close()
+
     async def fetch_by_ids(self, user_id: str, ids: list[str]) -> list[dict[str, Any]]:
         return await asyncio.to_thread(self._fetch_by_ids_sync, user_id, ids)
 

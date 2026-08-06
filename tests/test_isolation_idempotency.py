@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
+from tide_mem.db import MemoryDB
+
 
 def _add(client, headers, request_id: str, user_id: str, fact: str):
     return client.post(
@@ -77,3 +81,15 @@ def test_request_id_cannot_cross_identity_boundary(client, auth_headers):
     response = client.post("/v1/memory/add", json=payload, headers=auth_headers)
     assert response.status_code == 400
     assert "different user_id/session_id" in response.json()["detail"]["reason"]
+
+
+def test_session_expansion_keeps_user_boundary(client, auth_headers, settings):
+    assert _add(client, auth_headers, "expand-a", "alice", "Alice keeps ORCHID evidence.").status_code == 200
+    assert _add(client, auth_headers, "expand-b", "bob", "Bob keeps CERULEAN evidence.").status_code == 200
+
+    db = MemoryDB(settings.db_path)
+    rows = asyncio.run(db.session_memories("alice", ["session-alice", "session-bob"]))
+
+    assert rows
+    assert all(row["user_id"] == "alice" for row in rows)
+    assert all("CERULEAN" not in row["content"] for row in rows)

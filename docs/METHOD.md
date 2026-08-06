@@ -93,9 +93,17 @@ The planner is prohibited from returning an answer or option label. Its output d
 Candidates are gathered through independent, user-scoped channels:
 
 - FTS5 BM25 over the original query;
-- FTS5 over decomposed subqueries;
+- FTS5 over decomposed subqueries and coverage slots, with lightweight
+  morphology expansion for variants such as `play`/`playing`;
 - exact entity and time-term substring matches;
 - bounded recent/current-state fallback for temporal questions.
+
+For questions that require complementary evidence (lists, comparisons,
+elapsed time, or state updates), TIDE-Mem identifies up to eight high-scoring
+sessions and expands their bounded local evidence. This second-stage lookup is
+still scoped by exact `user_id` and adds no model call. It recovers related
+messages that are lexically weak in isolation but belong to a semantically
+relevant episode.
 
 For a candidate `e` found at rank `r_c(e)` in channel `c`, reciprocal-rank fusion uses
 
@@ -122,17 +130,29 @@ For questions that explicitly request the latest/current state, a current ledger
 
 ### 5.4 Evidence-ID reranking
 
-At most a bounded number of candidates is sent to `gpt-4o-mini`. The model sees IDs and short evidence snippets, treats all text as untrusted, and returns only:
+At most a bounded number of candidates is sent to `gpt-4o-mini`. Before that
+call, source-message and session-aware diversification prevents the small
+window from being filled by raw/window/card copies of one fact. The model sees
+IDs and short evidence snippets, treats all text as untrusted, and returns only:
 
 ```json
 {"ranked": [{"id": "candidate-id", "score": 0.0}]}
 ```
 
-It cannot create final evidence text or answer the question. Unknown or duplicate IDs are discarded programmatically. The final relevance score combines deterministic and LLM ranking signals.
+It cannot create final evidence text or answer the question. Unknown or
+duplicate IDs are discarded programmatically. The final relevance score
+combines deterministic and LLM ranking signals. A bounded semantic anchor is
+also propagated to other records from a selected session, allowing related
+history to reach the final coverage stage without pretending those records
+were individually reranked.
 
 ### 5.5 Coverage-aware selection
 
-A greedy selector rewards candidates that cover still-unmet plan slots and penalizes high Jaccard duplication. The duplicate penalty is reduced for list, count, and multi-hop questions, where several records are expected.
+A greedy selector rewards candidates that cover still-unmet plan slots and
+penalizes high Jaccard duplication. For multi-evidence questions it also
+rewards new source-message and session coverage. The duplicate penalty is
+reduced for list, count, and multi-hop questions, where several records are
+expected.
 
 For candidate `e` at a selection step:
 
@@ -140,6 +160,7 @@ For candidate `e` at a selection step:
 utility(e) = final_score(e)
            + coverage_bonus(e)
            + structured_card_bonus(e)
+           + source_novelty_bonus(e)
            - duplicate_penalty(e, selected).
 ```
 
@@ -162,7 +183,8 @@ Let `N_u` be records for one user, `Q` the number of query expansions, `C` the f
 
 - Add database work is linear in source messages plus extracted cards.
 - FTS candidate retrieval is approximately `Q * O(log N_u + hits)` under the index.
-- deterministic ranking is `O(C)`;
+- deterministic ranking is `O(C)`; multi-evidence session expansion is bounded
+  by eight sessions and 80 records per session;
 - the bounded reranker processes at most `R` snippets;
 - greedy coverage selection is `O(KC)` in the current simple implementation, with small fixed `C` and `K <= 100`.
 

@@ -5,40 +5,43 @@ Challenge leaderboard score. The challenge-fixed submission configuration
 still uses `gpt-4o-mini`; the alternate model below was used only because it
 was the available development endpoint.
 
-## Setup
+## Cross-conversation final proxy
 
 - Dataset: LoCoMo-Refined public textual subset
-- Sample: first 50 eligible questions from `conv-26`
-- Scored questions: 49 (one question has no textual evidence label)
+- Sample: deterministic category-stratified questions across all 10 public
+  conversations
+- Scored questions: 59 (category counts: 19/12/8/20 for categories 1/2/3/4)
 - Model: `gpt-5.6-luna` through an OpenAI-compatible Chat Completions endpoint
 - Memory view: `full`
 - Retrieval top-k: 100
 - Rerank candidates: 20
 - Reasoning effort: `none`
 - Add protocol: at most 20 messages and 2,000 words per synchronous request
-- Search concurrency: 4
+- Search concurrency: 8
 
 No provider credential, response payload, or private endpoint is stored in the
 repository.
 
-## Tuned result
+### Result
 
-| Metric | Value |
-|---|---:|
-| MRR | 0.764519 |
-| NDCG@10 | 0.736880 |
-| Evidence Recall@10 | 0.785714 |
-| Evidence Recall@100 | 0.862245 |
-| RecallAny@100 | 0.897959 |
-| RecallAll@100 | 0.816327 |
-| Search p50 | 10.630 s |
-| Search p95 | 22.966 s |
+| Metric | Baseline | Final tuned |
+|---|---:|---:|
+| MRR | 0.779266 | 0.758619 |
+| NDCG@10 | 0.728091 | 0.731778 |
+| Evidence Recall@10 | 0.796610 | 0.810734 |
+| Evidence Recall@100 | 0.903955 | 0.923729 |
+| RecallAny@100 | 0.949153 | 0.966102 |
+| RecallAll@100 | 0.847458 | 0.881356 |
+| Category-1 RecallAll@100 | 0.578947 | 0.736842 |
+| Search p50 | 11.619 s | 12.837 s |
+| Search p95 | 20.002 s | 28.919 s |
 
-The candidate-generation change increased normalized RecallAll@100 from
-0.775510 to 0.816327 on the same 50-question slice. Category-1
-RecallAll@100 increased from 0.40 to 0.70. MRR varied from 0.769682 to
-0.764519 across the two Luna runs, which is within the observed stochastic
-reranking variation.
+The final source-diverse rerank window and bounded session expansion improve
+complete multi-evidence coverage, especially on category 1. The small MRR
+tradeoff reflects a deliberate preference for returning all supporting
+evidence within top 100; Luna reranking also has observed run-to-run variance.
+No cold-Add latency is reported because the long run was safely resumed through
+idempotent request IDs after the execution environment interrupted it.
 
 ## Ablation observations
 
@@ -56,8 +59,8 @@ detail.
 
 ## Limitations
 
-- The 50 questions come from one conversation, so this is a regression and
-  tuning slice rather than a representative benchmark estimate.
+- The stratified 59-question sample is broader than the initial one-conversation
+  slice but remains a development proxy rather than the full benchmark.
 - Answer generation and judge scoring were not run.
 - The alternate-model result is not challenge-compliant and must not be
   reported as an official score.
